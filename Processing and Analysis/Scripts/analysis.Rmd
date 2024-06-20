@@ -1,0 +1,192 @@
+---
+title: "RNA-seq Analysis"
+author: "Giovani Genesi, MSc / Phillips Lab (UPenn)"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r Load packages, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE}
+# This code will check if required packages are installed. 
+# If not, this code will install these packages.
+if (!require("BiocManager", quietly = TRUE)){
+  install.packages("BiocManager")
+}
+
+# Load required packages
+if(!require("ggplot2", quietly = TRUE)){install.packages("ggplot2")}
+library(ggplot2)
+if(!require("dplyr", quietly = TRUE)){install.packages("dplyr")}
+library(dplyr)
+if(!require("tidyr", quietly = TRUE)){install.packages("tidyr")}
+library(tidyr)
+if(!require("stringr", quietly = TRUE)){install.packages("stringr")}
+library(stringr)
+if(!require("DESeq2", quietly = TRUE)){BiocManager::install("DESeq2")}
+library(DESeq2)
+# library(tidytext)
+# library(ggrepel)
+```
+
+### Change for each project
+```{r Setup Working Directory}
+### CHANGE FOR EACH PROJECT
+# Specify working directory
+work_dir = "C:/Users/thephillipslab/Documents/Projects/RNAseq_Brien_paper/"
+knitr::opts_knit$set(root.dir = work_dir)
+
+# Output settings
+project_name = "RNAseq_Brien"
+
+# Set path to importable data folder 
+import_dir = file.path(work_dir, "Processing and Analysis/Importable Data/")
+
+# Set path to importable data folder 
+metadata_dir = file.path(work_dir, "Original Data and Metadata/Metadata/")
+
+# Set path to results folder 
+results_dir = file.path(work_dir, "Processing and Analysis/Analysis Data/")
+
+# # List comparisons for the experiment 
+# controls = c("RAG_Sub-cut", "RAG_IC", "WT_IC", "baseline")
+# conditions = c("WT_Sub_cut", "WT_IC", "RAG_IC", "RAG_Sub-cut", "28_days")
+# 
+# # Select an specific comparison
+# comparisons = paste(conditions[5], "vs", controls[4], sep = "_")
+# 
+# # Minimum number of statistically significant gRNAs per gene:
+# min_guides = 2
+# 
+# # Significance threshold
+# alpha = 0.1
+```
+
+
+
+```{r Prepare Gene Expression Data}
+# Load raw counts
+counts <- read.delim(file.path(import_dir,
+                               "RNAseq_counts_Brien_paper.txt"), 
+                     header = T, 
+                     row.names = 1)
+
+counts %>% head() # check the loaded count matrix
+
+colnames(counts) # make sure columns correctly correspond to samples' names
+
+```
+
+```{r Prepare Metadata}
+# Load sample metadata
+sample_metadata <- read.csv(file.path(metadata_dir, "sample_metadata.csv"), 
+                            header = T)
+
+sample_metadata$genotype = sub("-", "_", sample_metadata$genotype) %>%
+  as.factor()
+sample_metadata$guide = as.factor(sample_metadata$guide)
+
+# Add harvest metadata
+sample_metadata <- sample_metadata %>%
+  mutate(sample.ID_A = "A",
+         sample.ID_B = "B") %>%
+  gather(key = "type", value = "harvest", sample.ID_A, sample.ID_B) %>%
+  select(-type) %>%
+  arrange(sample.ID)
+
+sample_metadata$harvest = as.factor(sample_metadata$harvest)
+
+# Add condition metadata
+sample_metadata$condition = paste(sample_metadata$guide,
+                                  sample_metadata$genotype,
+                                  sep = "_") %>% as.factor()
+
+# Add sample name
+sample_metadata$sample.name = paste(sample_metadata$guide,
+                                  sample_metadata$genotype,
+                                  sample_metadata$replicate,
+                                  sample_metadata$harvest,
+                                  sep = "_") %>% as.factor()
+
+# Group sample ID and harvest to match colnames of count matrix
+sample_metadata$ID.harvests = paste0("X", 
+                                     sample_metadata$sample.ID,
+                                     sample_metadata$harvest)
+
+# Match sample IDs to colnames in the counts matrix
+sample_metadata <- sample_metadata %>%
+  mutate(colnames = sapply(ID.harvests, function(harvest) {
+    matching_colname <- colnames(counts)[str_detect(colnames(counts), harvest)]
+    if(length(matching_colname) > 0) {
+      return(matching_colname[1]) # Return the first matching value
+    } else {
+      return(NA) # If no match is found, return NA
+    }
+  }))
+
+# Remove samples that did not match
+sample_metadata = filter(sample_metadata, !is.na(sample_metadata$colnames))
+
+saveRDS(sample_metadata, file = file.path(import_dir, "sample_metadata.rds"))
+```
+
+```{r Prepare counts matrix}
+# Create a named vector for replacement
+replacement_vector <- setNames(sample_metadata$sample.name, 
+                               sample_metadata$colnames)
+
+# Replace the column names in counts
+new_colnames <- replacement_vector[colnames(counts)]
+colnames(counts) <- new_colnames
+
+# Make the control the reference level 
+sample_metadata$guide = relevel(sample_metadata$guide, 
+                                "LUC")
+levels(sample_metadata$guide)
+
+sample_metadata$genotype = relevel(sample_metadata$genotype,
+                                   "K27M+")
+levels(sample_metadata$genotype)
+
+sample_metadata$condition = relevel(sample_metadata$condition, 
+                                    "LUC_K27M+")
+levels(sample_metadata$condition)
+
+saveRDS(counts, file = file.path(import_dir, "counts.rds"))
+```
+
+```{r Create DESeqDataSet}
+# Create DESeqDataSet
+dataSet <- DESeqDataSetFromMatrix(countData = counts, # count matrix
+                                  colData = sample_metadata , # samples&grouping
+                                  design = ~ condition
+                                  )
+
+dataSet
+
+```
+
+```{r Filter genes with low counts and create DESeq object}
+# Pre-filtering genes with 1 read or less
+dataSet <- DESeq2::estimateSizeFactors(dataSet)
+dataSet <- DESeq2::estimateDispersions(dataSet)
+
+nrow(dataSet)
+
+keep <- rowSums( counts(dataSet, normalized=TRUE) >= 5 ) >= 4
+dataSet <- dataSet[keep,]
+nrow(dataSet)
+
+ keep <- rowSums(counts(dataSet)) > 50
+ dataSet <- dataSet[keep,]
+ nrow(dataSet)
+
+# Create DESeq object
+DESeq <- DESeq(dataSet,
+               #test="LRT", reduced=~sgRNA + treatment
+               )
+
+DESeq2::plotDispEsts(DESeq)
+resultsNames(DESeq)
+ 
+
+```
+
