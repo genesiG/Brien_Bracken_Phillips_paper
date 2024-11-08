@@ -1,0 +1,1679 @@
+---
+title: "RNA-seq Analysis"
+author: "Giovani Genesi, MSc / Phillips Lab (UPenn)"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r Load packages, echo=FALSE, warning=FALSE, message=FALSE, include=FALSE}
+# Set global options
+knitr::opts_chunk$set(echo = FALSE, 
+                      warning = FALSE, 
+                      message = FALSE, 
+                      include = TRUE)
+
+# This code will check if required packages are installed. 
+# If not, this code will install these packages.
+if (!require("BiocManager", quietly = TRUE)){
+  install.packages("BiocManager")
+}
+
+# Load required packages
+if(!require("ggplot2", quietly = TRUE)){install.packages("ggplot2")}
+library(ggplot2)
+if(!require("ggrepel", quietly = TRUE)){install.packages("ggrepel")}
+library(ggrepel)
+if(!require("dplyr", quietly = TRUE)){install.packages("dplyr")}
+library(dplyr)
+if(!require("tidyr", quietly = TRUE)){install.packages("tidyr")}
+library(tidyr)
+if(!require("tidyverse", quietly = TRUE)){install.packages("tidyverse")}
+library(tidyverse)
+if(!require("stringr", quietly = TRUE)){install.packages("stringr")}
+library(stringr)
+if(!require("DESeq2", quietly = TRUE)){BiocManager::install("DESeq2")}
+library(DESeq2)
+if(!require("edgeR", quietly = TRUE)){BiocManager::install("edgeR")}
+library(edgeR)
+# library(tidytext)
+# library(ggrepel)
+```
+
+### Change for each project
+```{r Setup Working Directory}
+### CHANGE FOR EACH PROJECT
+# Specify working directory
+work_dir = "C:/Users/thephillipslab/Documents/Projects/RNAseq_Brien_paper/"
+knitr::opts_knit$set(root.dir = work_dir)
+
+
+# Output settings
+project_name = "RNAseq_Brien"
+contrast_by = "condition"
+
+# Set path to importable data folder 
+import_dir = file.path(work_dir, "Processing and Analysis/Importable Data/")
+
+# Set path to importable data folder 
+metadata_dir = file.path(work_dir, "Original Data and Metadata/Metadata/")
+
+# Set path to results folder 
+results_dir = file.path(work_dir, "Processing and Analysis/Analysis Data/")
+
+```
+
+```{r Source scripts}
+# Load functions to use in the analysis
+source("./Processing and Analysis/Scripts/makeVolcanoPlot.R")  
+
+```
+
+```{r Load PcB target genes}
+# This code loads the information about the PcB targets in DIPGXIII and keeps
+# gene names
+PcB_genes <- read.csv(file.path(metadata_dir, 
+                                "DIPGXIII_PcG_consensus_target_genes.csv"), 
+                      header = T)
+
+PcB_gene_names = PcB_genes["Gene.Name"]
+
+# Store PcB target genes
+saveRDS(PcB_genes, file = file.path(import_dir, "PcB_genes.rds"))
+saveRDS(PcB_gene_names, file = file.path(import_dir, "PcB_gene_names.rds"))
+```
+
+
+
+```{r Load Gene Expression Data}
+# Load raw counts
+counts <- read.delim(file.path(import_dir,
+                               "RNAseq_counts_Brien_paper.txt"), 
+                     header = T, 
+                     row.names = 1)
+
+# counts %>% head() # check the loaded count matrix
+# 
+# colnames(counts) # make sure columns correctly correspond to samples' names
+
+```
+
+
+```{r Prepare Metadata}
+# Load sample metadata
+sample_metadata <- read.csv(file.path(metadata_dir, "sample_metadata.csv"), 
+                            header = T)
+
+sample_metadata$genotype = sub("-", "_", sample_metadata$genotype) %>%
+  as.factor()
+sample_metadata$guide = as.factor(sample_metadata$guide)
+sample_metadata$target = as.factor(sample_metadata$target)
+
+# Add harvest metadata
+sample_metadata <- sample_metadata %>%
+  mutate(sample.ID_A = "A",
+         sample.ID_B = "B") %>%
+  gather(key = "type", value = "harvest", sample.ID_A, sample.ID_B) %>%
+  select(-type) %>%
+  arrange(sample.ID)
+
+sample_metadata$harvest = as.factor(sample_metadata$harvest)
+
+# Add condition pooling timepoints
+sample_metadata$condition = paste(sample_metadata$guide,
+                                  sample_metadata$genotype,
+                                  sep = "_") %>% as.factor()
+
+# Add condition pooling gRNAs
+sample_metadata$treatment = paste(sample_metadata$target,
+                                  sample_metadata$genotype,
+                                  sep = "_") %>% as.factor()
+
+# Add condition pooling gRNAs for each harvest
+sample_metadata$group = paste(sample_metadata$target,
+                                  sample_metadata$genotype,
+                                  sample_metadata$harvest,
+                                  sep = "_") %>% as.factor()
+
+# Add sample name
+sample_metadata$sample.name = paste(sample_metadata$guide,
+                                  sample_metadata$genotype,
+                                  sample_metadata$replicate,
+                                  sample_metadata$harvest,
+                                  sep = "_") %>% as.factor()
+
+# Group sample ID and harvest to match colnames of count matrix
+sample_metadata$ID.harvests = paste0("X", 
+                                     sample_metadata$sample.ID,
+                                     sample_metadata$harvest)
+
+# Match sample IDs to colnames in the counts matrix
+sample_metadata <- sample_metadata %>%
+  mutate(colnames = sapply(ID.harvests, function(harvest) {
+    matching_colname <- colnames(counts)[str_detect(colnames(counts), harvest)]
+    if(length(matching_colname) > 0) {
+      return(matching_colname[1]) # Return the first matching value
+    } else {
+      return(NA) # If no match is found, return NA
+    }
+  }))
+
+# Make the rownames equal to sample names
+rownames(sample_metadata) = sample_metadata$sample.name
+
+# Remove samples that did not match
+sample_metadata = filter(sample_metadata, !is.na(sample_metadata$colnames))
+
+# Store edited sample metadata
+saveRDS(sample_metadata, file = file.path(import_dir, 
+                                          "sample_metadata.rds"))
+write.csv(sample_metadata, file.path(metadata_dir, 
+                                     "sample_metadata_edited.csv"), 
+          row.names = TRUE, col.names = TRUE, quote = FALSE)
+```
+  
+### Prepare counts matrix
+```{r Prepare counts matrix for data analysis}
+# This code will reorder the columns in the count matrix to match the sample
+# order in the sample metadata
+counts = counts[, sample_metadata$colnames]
+
+# The following code will replace the colnames in the count matrix 
+# with appropriate sample names 
+
+## 1. Create a named vector for replacement
+replacement_vector <- setNames(sample_metadata$sample.name, 
+                               sample_metadata$colnames)
+
+## 2. Replace the column names in counts
+new_colnames <- replacement_vector[colnames(counts)]
+colnames(counts) <- new_colnames
+
+## 3. Check if colnames of countr matrix match rownames of metadata
+# all(rownames(sample_metadata) == colnames(counts))
+
+# Make the control the reference level for each factor
+sample_metadata$guide = relevel(sample_metadata$guide, 
+                                "LUC")
+print("Levels of gRNA factor:")
+levels(sample_metadata$guide)
+
+sample_metadata$target = relevel(sample_metadata$target, 
+                                 "LUC")
+print("Levels of gene target factor:")
+levels(sample_metadata$target)
+
+sample_metadata$genotype = relevel(sample_metadata$genotype,
+                                   "K27M+")
+print("Levels of genotype factor:")
+levels(sample_metadata$genotype)
+
+sample_metadata$condition = relevel(sample_metadata$condition, 
+                                    "LUC_K27M+")
+print("Levels of condition factor:")
+levels(sample_metadata$condition)
+
+sample_metadata$treatment = relevel(sample_metadata$treatment, 
+                                    "LUC_K27M+")
+print("Levels of treatment factor:")
+levels(sample_metadata$treatment)
+
+sample_metadata$group = relevel(sample_metadata$group, 
+                                "LUC_K27M+_A")
+print("Levels of group factor:")
+levels(sample_metadata$group)
+
+# Save the edited count matrix
+saveRDS(counts, file = file.path(import_dir, "counts.rds"))
+```
+  
+### QC
+```{r QC - Check counts per sample}
+# Set up colours
+cols = factor(sample_metadata$target) %>% as.numeric()
+
+# Convert count matrix to df for plotting with ggplot
+df_counts <- data.frame(
+  Sample = colnames(counts),
+  Counts = colSums(counts)
+)
+
+# Ensure Sample is a factor with levels in the desired order
+df_counts$Sample <- factor(df_counts$Sample, levels = df_counts$Sample)
+
+# Make barplot
+bp <- ggplot(df_counts, aes(x = Sample, y = Counts, fill = Sample)) +
+  geom_bar(stat = "identity", show.legend = FALSE, color = "black") +
+  scale_fill_manual(values = cols) +
+  labs(title = "Reads per sample") +
+  xlab("Raw counts") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+        axis.text.y = element_text(size = 8),
+        plot.title = element_text(hjust = 0.5))
+
+# Export barplot
+bp_path = file.path(results_dir,
+                    paste0("counts_per_index.pdf"))
+
+pdf(file = bp_path, width = 10, height = 5)
+print(bp)
+dev.off()
+```
+  
+### Create DESeqDataSet and fit model
+```{r Create DESeqDataSet and DESeq object}
+# Create DESeqDataSet
+dataSet <- DESeqDataSetFromMatrix(countData = counts, # count matrix
+                                  colData = sample_metadata , # samples&grouping
+                                  design = ~ harvest + condition
+                                  )
+
+# Pre-filtering genes with low total counts
+nrow(dataSet)
+
+smallestGroupSize <- 2
+keep <- rowSums(counts(dataSet) >= 100) >= smallestGroupSize
+dataSet <- dataSet[keep,]
+nrow(dataSet)
+
+# Create DESeq object
+DESeq <- DESeq(dataSet,
+               # test="LRT", reduced=~harvest
+               )
+
+DESeq2::plotDispEsts(DESeq)
+
+
+
+```
+  
+
+```{r Create DESeqDataSet}
+# # Create DESeqDataSet
+# dataSet <- DESeqDataSetFromMatrix(countData = counts, # count matrix
+#                                   colData = sample_metadata , # samples&grouping
+#                                   design = ~ harvest + condition
+#                                   )
+# 
+# # Pre-filtering genes with low total counts
+# nrow(dataSet)
+# 
+# smallestGroupSize <- 2
+# keep <- rowSums(counts(dataSet) >= 10) >= smallestGroupSize
+# dataSet <- dataSet[keep,]
+# nrow(dataSet)
+```
+  
+### Statistical test (Wald's test)
+### Volcano plots
+```{r Statistical test (Walds Test)}
+# FDR cut-off
+alpha = 0.01
+
+# LFC cut-off
+lfc = 0.585
+
+# List comparisons for statistical testing
+
+## Compare conditions, taking timepoint of harvest into account in the design matrix
+# output_dir = contrast_by
+output_dir = as.character(DESeq@design)[2]
+
+controls = c("LUC_K27M+", "LUC_K27M_KO")
+
+conditions = c("LUC_K27M_KO", "CBX4.1_K27M_KO", "CBX4.2_K27M_KO", "CBX2.1_K27M_KO",
+               "CBX2.3_K27M_KO","EZH2.3_K27M_KO","EZH2.5_K27M_KO","CBX8.1_K27M_KO",
+               "CBX8.2_K27M_KO","BMI1.1_K27M_KO","BMI1.3_K27M_KO","LUC_K27M+",
+               "CBX4.1_K27M+","CBX4.2_K27M+","CBX2.1_K27M+","CBX2.3_K27M+",
+               "EZH2.3_K27M+","EZH2.5_K27M+","CBX8.1_K27M+","CBX8.2_K27M+",
+               "BMI1.1_K27M+","BMI1.3_K27M+")
+
+# Define color mapping for conditions
+color_mapping <- c(
+  "LUC" = "black",
+  "CBX4" = "darkgreen",
+  "CBX2" = "lightgreen",
+  "CBX8" = "green4",
+  "BMI1" = "dodgerblue",
+  "EZH2" = "dodgerblue3"
+)
+
+# Create output dir
+output.dir = file.path(results_dir, output_dir)
+if(!dir.exists(output.dir)){
+      dir.create(output.dir)
+    }
+
+
+volcano_dir = file.path(results_dir, output_dir, "Volcano plots")
+if(!dir.exists(volcano_dir)){
+  dir.create(volcano_dir)
+}
+
+
+deseq_dir = file.path(results_dir, output_dir, "DESeq output")
+if(!dir.exists(deseq_dir)){
+  dir.create(deseq_dir)
+}
+    
+# This code loops through each possible treatment vs control combination,
+# performs statistical testing, and outputs table of results
+for(control in 1:length(controls)){
+  for(condition in 1:length(conditions)){
+    if(conditions[condition] == controls[control]){
+      next
+    }
+    # Select an specific comparison
+    comparisons = paste(conditions[condition], "vs", controls[control], sep = "_")
+
+    # Contrast
+    contrast = c(contrast_by,conditions[condition],controls[control])
+    print(contrast)
+    # Building the results table
+    results <- results(DESeq,
+                       contrast = contrast,
+                       alpha = alpha)
+
+    comp_dir = file.path(volcano_dir, comparisons)
+    comp_dir_short = gsub(work_dir, "./", comp_dir)
+    # comp_dir <- paste0("\\\\?\\", file.path(results_dir, output_dir, volcano_dir, comparisons))
+    
+    if(!dir.exists(comp_dir_short)){
+      dir.create(comp_dir_short)
+    }
+    
+    comp_dir2 = file.path(deseq_dir, comparisons)
+    comp_dir2_short = gsub(work_dir, "./", comp_dir2)
+    # comp_dir2 <- paste0("\\\\?\\", file.path(results_dir, output_dir, deseq_dir, comparisons))
+    
+    if(!dir.exists(comp_dir2_short)){
+      dir.create(comp_dir2_short)
+    }
+    
+    # Export results table
+    results_df <- as.data.frame(results) %>% arrange(padj)
+
+    results_df = results_df %>% rownames_to_column(var = "Gene")
+
+    results_df$effect = "NS"
+    results_df$effect[results_df$padj < 0.1 &
+                        results_df$log2FoldChange <= -lfc] = "Downregulated"
+    results_df$effect[results_df$padj < 0.1 &
+                        results_df$log2FoldChange >= lfc] = "Upregulated"
+
+    results_df$target = "Non-PcB"
+    results_df$target[results_df$Gene %in% PcB_gene_names$Gene.Name] = "PcB target"
+
+    # Prepare data for volcano plot
+    results_PcB = filter(results_df, Gene %in% PcB_gene_names$Gene.Name)
+
+    results_PcB$Label = NA
+    results_PcB$Label[results_PcB$effect != "NS"] = results_PcB$Gene[results_PcB$effect != "NS"]
+
+    is_labeled = na.omit(results_PcB$Label)
+
+    results_df$Label = NA
+    results_df$Label[results_df$Gene %in% is_labeled] = results_df$Gene[results_df$Gene %in% is_labeled]
+
+    # Determine color for the current condition based on the color mapping
+    condition_color <- "black"  # Default color if no pattern matches
+    for (pattern in names(color_mapping)) {
+      if (grepl(pattern, conditions[condition])) {
+        condition_color <- color_mapping[pattern]
+        break
+      }
+    }
+
+    # Make volcano plot and export
+    comparison = gsub("_", " ", comparisons)
+    ### For PcB targets only
+    vp = makeVolcanoPlot(results_PcB,
+                         lfc.threshold = lfc,
+                         color_by = results_PcB$effect,
+                         label_by = results_PcB$Label,
+                         y_lab = (expression(bold(bolditalic(-Log[10]) ~ "p-value"))),
+                         color_labels = c("Downregulated", "NS", "Upregulated"),
+                         color_values = c("navyblue", "gray", "red"),
+                         x_axis=results_PcB$log2FoldChange,
+                         y_axis=results_PcB$pvalue,
+                         nudgex = 0.75 * results_df$log2FoldChange
+                       )
+    
+    ### For the whole transcriptome, highliting PcB targets
+    vp2 = makeVolcanoPlot(results_df,
+                         lfc.threshold = lfc,
+                         color_by = results_df$target,
+                         label_by = results_df$Label,
+                         y_lab = (expression(bold(bolditalic(-Log[10]) ~ "p-value"))),
+                         color_labels = c("PcB target", "Non-PcB"),
+                         color_values = c(condition_color, "gray"),
+                         x_axis=results_df$log2FoldChange,
+                         y_axis=results_df$pvalue,
+                         nudgex = 0.75 * results_df$log2FoldChange
+                         )
+    
+    # Export volcano plot
+    vp_path = file.path(comp_dir,
+                        paste0("volcano_PcB_targets_", comparisons, ".pdf"))
+    vp_path = gsub(work_dir, "./", vp_path)
+    
+    pdf(file = vp_path, width = 6.5, height = 5)
+    print(vp)
+    dev.off()
+
+    # Export volcano plot for all genes
+    vp_path = file.path(comp_dir,
+                        paste0("volcano_all_genes_", comparisons, ".pdf"))
+    vp_path = gsub(work_dir, "./", vp_path)
+    
+    pdf(file = vp_path, width = 6.5, height = 5)
+    print(vp2)
+    dev.off()
+
+    # Export data frames with results
+    df_path = file.path(comp_dir2,
+                        paste0("results_", comparisons, ".csv"))
+    df_path = gsub(work_dir, "./", df_path)
+    
+    write.csv(results_df, file = df_path, quote = FALSE)
+
+    df_path = file.path(comp_dir2,
+                        paste0("PcB_targets_", comparisons, ".csv"))
+    df_path = gsub(work_dir, "./", df_path)
+    
+    write.csv(results_PcB, file = df_path, quote = FALSE)
+
+  }
+}
+
+# Export DESeq object
+# contrast_by2 = tolower(gsub(" ", "_", output_dir))
+rds_name = paste0("DESeq.rds")
+
+saveRDS(DESeq,
+        file = file.path(deseq_dir, rds_name))
+
+# Export DESeqDataSet
+rds_name = paste0("DESeqDataSet.rds")
+
+saveRDS(dataSet,
+        file = file.path(deseq_dir, rds_name))
+
+
+# Export experimental design
+txt_name = paste0("design.txt")
+
+writeLines(paste(dataSet@design, collapse = " "),
+           con = file.path(deseq_dir, txt_name))
+```
+
+```{r Statistical test (LRT)}
+# # FDR cut-off
+# alpha = 0.1
+# 
+# # LFC cut-off
+# lfc = 0.585
+# 
+# # List comparisons for statistical testing
+# 
+# ## Compare conditions, taking timepoint of harvest into account in the design matrix
+# output_dir = "Harvest plus Condition LRT"
+# contrast_by = "condition"
+# 
+# genotypes = c("K27M\\+", "K27M_KO")
+# 
+# controls = c("LUC_K27M_KO", "LUC_K27M\\+")
+# 
+# conditions = c("LUC_K27M\\+", "CBX4", "CBX2","CBX8",
+#                "EZH2.3","EZH2.5","BMI1")
+# 
+# # conditions[grepl("LUC", conditions) & grepl("K27M\\+", conditions)]
+# 
+# # Define color mapping for conditions
+# color_mapping <- c(
+#   "CBX4" = "darkgreen",
+#   "CBX2" = "lightgreen",
+#   "CBX8" = "green4",
+#   "BMI1" = "dodgerblue",
+#   "EZH2" = "dodgerblue3"
+# )
+# 
+# # Create output dir
+# output.dir = file.path(results_dir, output_dir)
+# if(!dir.exists(output.dir)){
+#       dir.create(output.dir)
+#     }
+# 
+# # This code loops through each possible treatment vs control combination,
+# # performs statistical testing, and outputs table of results
+# for(control in 1:length(controls)){
+#   for(condition in 1:length(conditions)){
+#     
+#     if(conditions[condition] == controls[control]){
+#       next
+#     }
+#     
+#     # Select an specific comparison
+#     comparisons = paste(conditions[condition], "vs", controls[control], sep = "_")
+#     comparisons = sub("\\\\", "", comparisons)
+#     
+#     # Subset dataSet for specific comparison
+#     dataSet_edited = dataSet[,
+#                              (grepl(conditions[condition],colnames(dataSet)) & grepl(genotypes[control],colnames(dataSet))) |
+#                                grepl(controls[control],colnames(dataSet))]
+#     
+#     
+#     print(paste0("Making comparisons: ", comparisons))
+#     
+#     # Create DESeq object
+#     DESeq <- DESeq(dataSet,
+#                    test="LRT", reduced=~harvest
+#                    )
+# 
+#     # Building the results table
+#     results <- results(DESeq)
+# 
+#     comp_dir = file.path(results_dir, output_dir, comparisons)
+#     if(!dir.exists(comp_dir)){
+#       dir.create(comp_dir)
+#     }
+# 
+#     # Export results table
+#     results_df <- as.data.frame(results) %>% arrange(pvalue)
+# 
+#     results_df = results_df %>% rownames_to_column(var = "Gene")
+# 
+#     results_df$effect = "NS"
+#     results_df$effect[results_df$pvalue < alpha &
+#                         results_df$log2FoldChange <= -lfc] = "Downregulated"
+#     results_df$effect[results_df$pvalue < alpha &
+#                         results_df$log2FoldChange >= lfc] = "Upregulated"
+# 
+#     results_df$target = "Non-PcB"
+#     results_df$target[results_df$Gene %in% PcB_gene_names$Gene.Name] = "PcB target"
+# 
+#     # Prepare data for volcano plot
+#     results_PcB = filter(results_df, Gene %in% PcB_gene_names$Gene.Name)
+# 
+#     results_PcB$Label = NA
+#     results_PcB$Label[results_PcB$effect != "NS"] = results_PcB$Gene[results_PcB$effect != "NS"]
+# 
+#     is_labeled = na.omit(results_PcB$Label)
+# 
+#     results_df$Label = NA
+#     results_df$Label[results_df$Gene %in% is_labeled] = results_df$Gene[results_df$Gene %in% is_labeled]
+# 
+#     # Determine color for the current condition based on the color mapping
+#     condition_color <- "black"  # Default color if no pattern matches
+#     for (pattern in names(color_mapping)) {
+#       if (grepl(pattern, conditions[condition])) {
+#         condition_color <- color_mapping[pattern]
+#         break
+#       }
+#     }
+# 
+#     # Make volcano plot and export
+#     comparison = gsub("_", " ", comparisons)
+#     ### For PcB targets only
+#     vp = makeVolcanoPlot(results_PcB,
+#                          lfc.threshold = lfc,
+#                          color_by = results_PcB$effect,
+#                          label_by = results_PcB$Label,
+#                          color_labels = c("Downregulated", "NS", "Upregulated"),
+#                          color_values = c("navyblue", "gray", "red"),
+#                          x_axis=results_PcB$log2FoldChange,
+#                          y_axis=results_PcB$pvalue)
+#     ### For the whole transcriptome, highliting PcB targets
+#     vp2 = makeVolcanoPlot(results_df,
+#                          lfc.threshold = lfc,
+#                          color_by = results_df$target,
+#                          label_by = results_df$Label,
+#                          color_labels = c("PcB target", "Non-PcB"),
+#                          color_values = c(condition_color, "gray"),
+#                          x_axis=results_df$log2FoldChange,
+#                          y_axis=results_df$pvalue)
+# 
+#     # Export volcano plot
+#     vp_path = file.path(comp_dir,
+#                         paste0("volcano_PcB_targets_", comparisons, ".pdf"))
+# 
+#     pdf(file = vp_path, width = 6.5, height = 5)
+#     print(vp)
+#     dev.off()
+# 
+#     # Export volcano plot for all genes
+#     vp_path = file.path(comp_dir,
+#                         paste0("volcano_all_genes_", comparisons, ".pdf"))
+# 
+#     pdf(file = vp_path, width = 6.5, height = 5)
+#     print(vp2)
+#     dev.off()
+# 
+#     # Export data frames with results
+#     df_path = file.path(comp_dir,
+#                         paste0("results_", comparisons, ".csv"))
+# 
+#     write.csv(results_df, file = df_path, quote = FALSE)
+# 
+#     df_path = file.path(comp_dir,
+#                         paste0("PcB_targets_", comparisons, ".csv"))
+#     write.csv(results_PcB, file = df_path, quote = FALSE)
+# 
+#   }
+# }
+# 
+# contrast_by = tolower(gsub(" ", "_", output_dir))
+# rds_name = paste0("DESeq_",contrast_by,"_LRT.rds")
+# 
+# saveRDS(DESeq,
+#         file = file.path(results_dir, rds_name))
+```
+
+
+  
+## Gene expression heatmaps (all genes)
+```{r Gene Expression Heatmap}
+
+if (!require("pheatmap")) {
+  install.packages("pheatmap", dependencies = TRUE)
+  }
+library(pheatmap)
+library(RColorBrewer)
+
+rlogData <- rlog(dataSet, blind = FALSE)
+rlogCounts <- assay(rlogData) %>% as.data.frame()
+
+# Get the number of rows (genes)
+n_all <- nrow(rlogCounts)
+
+# Convert rlogCounts to a numeric matrix
+rlogCounts_mat <- as.matrix(rlogCounts)
+
+# Plot heatmap
+hm <- pheatmap(rlogCounts_mat,
+               color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdBu")))(100),
+               scale = "row",
+               clustering_distance_rows = "euclidean",
+               clustering_distance_cols = "euclidean",
+               clustering_method = "complete",
+               show_rownames = FALSE,
+               main = paste0("Differentially expressed genes\n N = ", n_all),
+               angle_col = 45,
+               labels_col = colnames(rlogData))
+
+
+hm_path = file.path(comp_dir,
+                        paste0("heatmap_all_genes.pdf"))
+hm_path = gsub(work_dir, "./", hm_path)
+    
+
+pdf(file = hm_path, width = 10, height = 5)
+print(hm)
+dev.off()
+
+print(hm)
+
+```
+  
+
+
+```{r Gene Expression Heatmap - PcB targets}
+
+# rlogCounts = assay(rlogData) %>% as.data.frame()
+# 
+# rlogCounts_PcB = filter(rlogCounts, rownames(rlogCounts) %in% PcB_gene_names$Gene.Name)
+# 
+# # rlogCounts_K27M = rlogCounts %>% select(-contains("K27M_KO"))
+# # rlogCounts_K27M_PcB = rlogCounts_PcB %>% select(-contains("K27M_KO"))
+# # 
+# # rlogCounts_K27M_KO = rlogCounts %>% select(-contains("K27M+"))
+# # rlogCounts_K27M_KO_PcB = rlogCounts_PcB %>% select(-contains("K27M+"))
+# 
+# 
+# n_PcB = nrow(rlogCounts_PcB)
+# labels_cols = colnames(rlogCounts)
+# # labels_K27M = colnames(rlogCounts_K27M)
+# # labels_K27M_KO = colnames(rlogCounts_K27M_KO)
+# 
+# hm = pheatmap(rlogCounts_K27M_KO,
+#          color = colorRampPalette(rev(brewer.pal(n = 7, name =
+#                                                    "RdBu")))(100),
+#          scale="row",
+#          clustering_distance_rows = "euclidean",
+#          clustering_distance_cols = "euclidean",
+#          clustering_method = "complete",
+#          show_rownames = F,
+#          main = paste0("Differentially expressed genes (PcB targets)\n N = ", n_PcB),
+#          angle_col = 45,
+#          labels_col = labels_K27M_KO
+#          )
+# 
+# hm_path = file.path(comp_dir,
+#                         paste0("heatmap_PcB_targets.pdf"))
+# 
+# pdf(file = hm_path, width = 10, height = 5)
+# print(hm)
+# dev.off()
+# 
+# hm
+```
+
+
+  
+    
+## Q-Q plots
+```{r Prepare data for Q-Q plot}
+# Pattern matching for each condition
+condition1 = "K27M_KO"
+condition2 = "K27M+"
+targets = c("CBX4.1", "CBX4.2", "CBX2.1","CBX2.3","EZH2.3","EZH2.5",
+            "CBX8.1","CBX8.2","BMI1.1","BMI1.3")
+# targets = c("CBX4", "CBX2","EZH2.3","EZH2.5",
+#             "CBX8","BMI1")
+
+subfolder = as.character(DESeq@design)[2]
+
+output_dir = file.path(results_dir, subfolder, "Q-Q plots by genotype")
+
+# Define color mapping for conditions
+color_mapping <- c(
+  "CBX4" = "darkgreen",
+  "CBX2" = "lightgreen",
+  "CBX8" = "green4",
+  "BMI1" = "dodgerblue",
+  "EZH2" = "dodgerblue3"
+)
+
+
+if(!dir.exists(output_dir)){
+  dir.create(output_dir)
+}
+
+search_dir = file.path(results_dir, subfolder, "DESeq output")
+list_dir = list.dirs(search_dir)
+
+for(i in 1:length(targets)){
+  t = paste0(targets[i], "_", condition1, "_vs_LUC_", condition1) # K27M KO
+  t2 = paste0(targets[i], "_", condition2, "_vs_LUC_", condition2) # K27M+
+
+  comp = gsub("_", " ", t) # K27M KO
+  comp2 = gsub("_", " ", t2) # K27M+
+
+  compare = paste0(targets[i], "_", condition2, "_vs_", condition1)
+  comp_dir = file.path(output_dir, compare)
+  comp_dir = gsub(work_dir, "./", comp_dir)
+
+  print(paste0("Making comparison: ", compare))
+
+  if(!dir.exists(comp_dir)){
+    dir.create(comp_dir)
+  }
+
+  t = gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", t) # K27M KO
+  t2 = gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", t2) # K27M+
+
+  f1 = list_dir[grepl(t, list_dir)]  # K27M KO
+  f2 = list_dir[grepl(t2, list_dir)]  # K27M+
+
+  csv1 = file.path(f1, paste0("results_", basename(f1), ".csv")) # K27M KO
+  csv2 = file.path(f2, paste0("results_", basename(f2), ".csv")) # K27M+
+
+  tab1 = read.csv(csv1)[,-1] # K27M KO
+  tab2 = read.csv(csv2)[,-1] # K27M+
+
+  tab_merge = merge(tab1, tab2, by = "Gene")
+
+  tab_merge$Label = NA
+  tab_merge$Label[!is.na(tab_merge$Label.x)] = tab_merge$Gene[!is.na(tab_merge$Label.x)]
+  tab_merge$Label[!is.na(tab_merge$Label.y)] = tab_merge$Gene[!is.na(tab_merge$Label.y)]
+
+  limits = c(min(range(tab_merge$log2FoldChange.x)), # K27M KO
+             max(range(tab_merge$log2FoldChange.y))) %>%  # K27M+
+    rev()
+
+  # tab_merge = filter(tab_merge, !is.na(tab_merge$Label))
+  tab_merge_label = filter(tab_merge, Gene %in% PcB_gene_names$Gene.Name)
+  # tab_merge_label = filter(tab_merge, (log2FoldChange.x - log2FoldChange.y >= 1) | 
+  #                              (log2FoldChange.x - log2FoldChange.y <= -1))
+  
+  # Determine color for the current condition based on the color mapping
+  condition_color <- "black"  # Default color if no pattern matches
+  for (pattern in names(color_mapping)) {
+    if (grepl(pattern, targets[i])) {
+      condition_color <- color_mapping[pattern]
+      break
+    }
+  }
+  # x = K27M KO
+  # y = K27M+
+
+  # Create the scatter plot
+  qqp <- ggplot(tab_merge, aes(x = log2FoldChange.x,
+                      y = log2FoldChange.y
+                      )
+  ) +
+    geom_point(size = 2, 
+               fill = "black", 
+               shape = 21) +
+    geom_point(data = tab_merge_label,
+               size = 2, 
+               fill = condition_color, 
+               color = condition_color, 
+               shape = 21) +
+    # geom_point(data = filter(tab_merge, log2FoldChange.x - log2FoldChange.y >= 1),
+    #            size = 2, fill = "blue", color = "blue", shape = 21) +
+    # geom_point(data = filter(tab_merge, log2FoldChange.x - log2FoldChange.y <= -1),
+    #            size = 2, fill = "red", color = "red", shape = 21) +
+    # Add reference lines
+    geom_abline(intercept = 0, slope = 1, color = "black") +
+    geom_abline(intercept = 1, slope = 1, linetype = "dashed", color = "red") +
+    geom_abline(intercept = -1, slope = 1, linetype = "dashed", color = "blue") +
+    labs(x = paste0("Log2 Fold-Change (", comp, ")"),
+         y = paste0("Log2 Fold-Change (", comp2, ")")) +
+    scale_x_continuous(limits = c(-limits[1],-limits[2])) +
+    scale_y_continuous(limits = c(-limits[1],-limits[2])) +
+    geom_text_repel(data = tab_merge_label, aes(label = Gene),
+                    nudge_y = ifelse((tab_merge_label$log2FoldChange.x - tab_merge_label$log2FoldChange.y >= 1), -1, 1),
+                    max.overlaps = 10
+      ) +
+    theme_classic() +
+    guides(color = "none", alpha = "none")
+
+  # Export q-q plot
+    qqp_path = file.path(comp_dir,
+                        paste0("Q-Q-plot.pdf"))
+    qqp_path = gsub(work_dir, "./", qqp_path)
+    
+    pdf(file = qqp_path, width = 5, height = 5)
+    print(qqp)
+    dev.off()
+
+
+}
+
+
+
+```
+
+  
+
+```{r Find common genes among comparisons}
+condition = "K27M+"
+targets = c("CBX4.1", "CBX4.2", "BMI1.1", "BMI1.3", "EZH2.3")
+
+subfolder = as.character(DESeq@design)[2]
+
+search_dir = file.path(results_dir, subfolder, "DESeq output")
+list_dir = list.dirs(search_dir)
+
+targets_list = character()
+
+for(i in 1:length(targets)){
+  t = paste0(targets[i], "_", condition, "_vs_LUC_", condition)
+  t = gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", t)
+  
+  f1 = list_dir[grepl(t, list_dir)]
+  targets_list = append(targets_list, f1)
+}
+
+# Create list of the results tables for each target
+results_list = list()
+
+for(i in 1:length(targets_list)){
+  csv1 = file.path(targets_list[i], paste0("PcB_targets_", 
+                                           basename(targets_list[i]), 
+                                           ".csv"))
+  tab1 = read.csv(csv1)[,-1]
+  results_list[[i]] = tab1
+}
+
+names(results_list) <- targets
+
+# Filter results to get only DE genes on each data frame
+filtered_results_list <- lapply(results_list, function(df) {
+  df[df$effect != "NS", ]
+})
+
+patterns = c("Gene|log2FoldChange|pvalue|padj|effect")
+
+# Append the respective name as a suffix to each column name in each data frame
+for (i in seq_along(results_list)) {
+  df_name <- names(results_list)[i]
+  colnames(filtered_results_list[[i]]) <- paste0(colnames(filtered_results_list[[i]]), "_", df_name)
+  colnames(filtered_results_list[[i]])[1] = "Gene"
+  cols = colnames(filtered_results_list[[i]])[grepl(patterns, 
+                                           colnames(filtered_results_list[[i]]))]
+  filtered_results_list[[i]] = filtered_results_list[[i]][cols]
+}
+
+# Merge DE info for each target into a single table to get common genes
+common_genes = filtered_results_list[[1]]
+
+for(i in 2:length(filtered_results_list)){
+  common_genes = merge(common_genes, filtered_results_list[[i]], by = "Gene")
+}
+  
+# Export table of common genes
+df_path = file.path(results_dir,
+                    paste0("common_genes_PcB_targets.csv"))
+df_path = gsub(work_dir, "./", df_path)
+    
+write.csv(common_genes, file = df_path, quote = FALSE, row.names = F)
+
+```
+
+  
+  
+### Scaled volcano plots
+```{r Make scaled volcano plot}
+condition = "K27M+"
+ref_targets = c("CBX4.1", "CBX4.2")
+
+targets = c("CBX4.1", "CBX4.2", "CBX2.1", "CBX2.3", "CBX8.1", "CBX8.2")
+subfolder = as.character(DESeq@design)[2]
+
+search_dir = file.path(results_dir, subfolder, "DESeq output")
+list_dir = list.dirs(search_dir)
+
+t = paste0(ref_targets[1], "_", condition, "_vs_LUC_", condition)
+t2 = paste0(ref_targets[2], "_", condition, "_vs_LUC_", condition)
+
+comp = gsub("_", " ", t)
+comp2 = gsub("_", " ", t2)
+
+t = gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", t)
+t2 = gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", t2)
+
+f1 = list_dir[grepl(t, list_dir)]
+f2 = list_dir[grepl(t2, list_dir)]
+
+csv1 = file.path(f1, paste0("PcB_targets_", basename(f1), ".csv"))
+csv2 = file.path(f2, paste0("PcB_targets_", basename(f2), ".csv"))
+
+# Load results tables for reference targets
+tab1 = read.csv(csv1)[,-1]
+tab2 = read.csv(csv2)[,-1]
+
+# Define limits for y-axis based on reference targets
+limits = c(min(tab1$pvalue, tab2$pvalue, na.rm = TRUE), 1) %>% rev()
+limits = -log10(limits)
+
+for(i in 1:length(targets)){
+  # Load results table
+  t = paste0(targets[i], "_", condition, "_vs_LUC_", condition)
+
+  comp = gsub("_", " ", t)
+
+  t_gsub = gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", t)
+
+  f1 = list_dir[grepl(t_gsub, list_dir)]
+
+  csv1 = file.path(f1, paste0("PcB_targets_", basename(f1), ".csv"))
+
+  tab1 = read.csv(csv1)[,-1]
+  
+  csv2 = file.path(f1, paste0("results_", basename(f1), ".csv"))
+
+  tab2 = read.csv(csv2)[,-1]
+  
+  # For PcB-only plot
+  tab1$Label = NA
+  tab1$Label[(tab1$log2FoldChange >= lfc | tab1$log2FoldChange <= -lfc) & 
+               tab1$pvalue <= alpha] = tab1$Gene[(tab1$log2FoldChange >= lfc | tab1$log2FoldChange <= -lfc) & 
+                                              tab1$pvalue <= alpha]
+  
+  # For whole transcriptome plot
+  tab2$Label = NA
+  tab2$Label[tab2$Gene %in% common_genes$Gene] = tab2$Gene[tab2$Gene %in% common_genes$Gene]
+  
+  # Prepare data for volcano plot
+  comparison = gsub("_", " ", t)
+  print(paste0("Making comparison: ", comparison))
+  
+  comp_dir = file.path(volcano_dir, t)
+  comp_dir = gsub(work_dir, "./", comp_dir)
+    if(!dir.exists(comp_dir)){
+      dir.create(comp_dir)
+    }
+
+  # Determine color for the current condition based on the color mapping
+  condition_color <- "black"  # Default color if no pattern matches
+  for (pattern in names(color_mapping)) {
+    if (grepl(pattern, targets[i])) {
+      condition_color <- color_mapping[pattern]
+      break
+    }
+  }
+  
+  # Make volcano plot and export
+  vp = makeVolcanoPlot(tab1, 
+                       lfc.threshold = lfc, 
+                       ylim = limits,
+                       color_by = tab1$effect,
+                       label_by = tab1$Label,
+                       y_lab = (expression(bold(bolditalic(-Log[10]) ~ "p-value"))),
+                       color_labels = c("Downregulated", "NS", "Upregulated"), 
+                       color_values = c("navyblue", "gray", "red"),
+                       x_axis=tab1$log2FoldChange, 
+                       y_axis=tab1$pvalue,
+                       nudgex = 0.75 * results_df$log2FoldChange
+                       )
+
+  # Export volcano plot
+  vp_path = file.path(comp_dir,
+                      paste0("volcano_scaled_PcB_targets", t, ".pdf"))
+  vp_path = gsub(work_dir, "./", vp_path)
+    
+  pdf(file = vp_path, width = 6.5, height = 5)
+  print(vp)
+  dev.off()
+
+  ### For the whole transcriptome, highliting PcB targets
+  vp2 = makeVolcanoPlot(tab2,
+                       lfc.threshold = lfc,
+                       ylim = limits,
+                       color_by = tab2$target,
+                       label_by = tab2$Label,
+                       y_lab = (expression(bold(bolditalic(-Log[10]) ~ "p-value"))),
+                       color_labels = c("PcB target", "Non-PcB"),
+                       color_values = c(condition_color, "gray"),
+                       x_axis=tab2$log2FoldChange,
+                       y_axis=tab2$pvalue,
+                       nudgex = 0.75 * results_df$log2FoldChange
+                       )
+
+    # Make volcano plot including all genes and export
+  # vp2 = makeVolcanoPlot2(tab2, tab1, lfc.threshold = lfc, ylim = limits)
+
+  # Export volcano plot
+  vp_path = file.path(comp_dir,
+                      paste0("volcano_scaled_all_genes_", t, ".pdf"))
+  vp_path = gsub(work_dir, "./", vp_path)
+    
+  pdf(file = vp_path, width = 6.5, height = 5)
+  print(vp2)
+  dev.off()
+
+}
+```
+  
+  
+### MDS plots (all genotypes)
+```{r MDS plot (all genotypes), fig.height=5, fig.width= 6.5}
+# Subset by genotype
+counts_WT = counts[, grepl("K27M+", colnames(counts))]
+counts_KO = counts[, grepl("K27M_KO", colnames(counts))]
+
+metadata_WT = filter(sample_metadata, genotype == "K27M+")
+metadata_KO = filter(sample_metadata, genotype == "K27M_KO")
+
+# Set up colors by genotype
+leg1 = sample_metadata$harvest %>% factor() %>% unique()
+leg1_sub = gsub("_|-", " ", leg1)
+cols1 = sample_metadata$harvest %>% factor() %>% as.numeric() 
+shape1 = sample_metadata$genotype %>% factor() %>% as.numeric()
+
+# Set up labels for the plot
+labels1 = sample_metadata$guide %>% factor() 
+
+library(edgeR)
+
+# Add extra space to right of plot area; change clipping to figure
+par(mar=c(5.3, 4.3, 4.3, 8.3), xpd=TRUE)
+
+# Plot
+plotMDS(counts, 
+        labels = labels1,
+        main = "", 
+        pch = shape1,
+        col = cols1, # colors
+        gene.selection = "pairwise"
+)
+legend("topright",
+       fill = leg1, 
+       legend = leg1_sub, # unique() will only show unique legend labels 
+       col = unique(cols1), # one color per unique legend label
+       inset=c(-0.2,0), # legend outside of plot
+       title = "Harvest"
+)
+
+
+
+```
+
+### MDS plots (by genotypes)
+```{r MDS plot (by genotypes), fig.height=10, fig.width= 6.5}
+# Subset by genotype
+counts_df = as.data.frame(counts)
+counts_WT = counts_df[, grepl("K27M\\+", colnames(counts_df))] %>% as.matrix()
+counts_KO = counts_df[, grepl("K27M_KO", colnames(counts_df))] %>% as.matrix()
+
+metadata_WT = filter(sample_metadata, genotype == "K27M+")
+metadata_KO = filter(sample_metadata, genotype == "K27M_KO")
+
+# Set up colors by harvest
+leg1 = metadata_WT$harvest %>% factor() %>% unique()
+leg1_sub = gsub("_|-", " ", leg1)
+cols1 = metadata_WT$harvest %>% factor() %>% as.numeric() 
+
+leg2 = metadata_KO$harvest %>% factor() %>% unique()
+leg2_sub = gsub("_|-", " ", leg1)
+cols2 = metadata_KO$harvest %>% factor() %>% as.numeric() 
+
+# Set up labels for the plots
+labels1 = metadata_WT$guide %>% factor() 
+labels2 = metadata_KO$guide %>% factor() 
+
+library(edgeR)
+
+# Add extra space to right of plot area; change clipping to figure
+par(mar=c(5.3, 4.3, 4.3, 8.3), xpd=TRUE, mfrow=c(2,1) )
+
+# Plot
+plotMDS(counts_WT, 
+        labels = labels1,
+        main = "K27M+", 
+        col = cols1, # colors
+        gene.selection = "pairwise", cex = 0.75
+)
+legend("topright",
+       fill = leg1, 
+       legend = leg1_sub, # unique() will only show unique legend labels 
+       col = unique(cols1), # one color per unique legend label
+       inset=c(-0.2,0), # legend outside of plot
+       title = "Harvest"
+)
+
+par(mar=c(5.3, 4.3, 4.3, 8.3), xpd=TRUE )
+
+# Plot
+plotMDS(counts_KO, 
+        labels = labels2,
+        main = "K27M KO", cex = 0.75, 
+        col = cols2, # colors
+        gene.selection = "pairwise"
+)
+legend("topright",
+       fill = leg2, 
+       legend = leg2_sub, # unique() will only show unique legend labels 
+       col = unique(cols2), # one color per unique legend label
+       inset=c(-0.2,0), # legend outside of plot
+       title = "Harvest"
+)
+```
+
+
+```{r MDS plot for PcB targets only (by genotypes), fig.height=10, fig.width= 6.5}
+# Subset by genotype
+counts_df = as.data.frame(counts)
+counts_PcB = filter(counts_df, rownames(counts_df) %in% PcB_gene_names$Gene.Name)
+counts_WT = counts_PcB[, grepl("K27M\\+", colnames(counts_PcB))] %>% as.matrix()
+counts_KO = counts_PcB[, grepl("K27M_KO", colnames(counts_PcB))] %>% as.matrix()
+
+metadata_WT = filter(sample_metadata, genotype == "K27M+")
+metadata_KO = filter(sample_metadata, genotype == "K27M_KO")
+
+# Set up colors by harvest
+leg1 = metadata_WT$harvest %>% factor() %>% unique()
+leg1_sub = gsub("_|-", " ", leg1)
+cols1 = metadata_WT$harvest %>% factor() %>% as.numeric() 
+
+leg2 = metadata_KO$harvest %>% factor() %>% unique()
+leg2_sub = gsub("_|-", " ", leg1)
+cols2 = metadata_KO$harvest %>% factor() %>% as.numeric() 
+
+# Set up labels for the plots
+labels1 = metadata_WT$guide %>% factor() 
+labels2 = metadata_KO$guide %>% factor() 
+
+library(edgeR)
+
+# Add extra space to right of plot area; change clipping to figure
+par(mar=c(5.3, 4.3, 4.3, 8.3), xpd=TRUE, mfrow=c(2,1) )
+
+# Plot
+plotMDS(counts_WT, 
+        labels = labels1,
+        main = "PcB targets\nK27M+", 
+        col = cols1, # colors
+        gene.selection = "pairwise", cex = 0.75
+)
+legend("topright",
+       fill = leg1, 
+       legend = leg1_sub, # unique() will only show unique legend labels 
+       col = unique(cols1), # one color per unique legend label
+       inset=c(-0.2,0), # legend outside of plot
+       title = "Harvest"
+)
+
+par(mar=c(5.3, 4.3, 4.3, 8.3), xpd=TRUE )
+
+# Plot
+plotMDS(counts_KO, 
+        labels = labels2,
+        main = "PcB targets\nK27M KO", cex = 0.75, 
+        col = cols2, # colors
+        gene.selection = "pairwise"
+)
+legend("topright",
+       fill = leg2, 
+       legend = leg2_sub, # unique() will only show unique legend labels 
+       col = unique(cols2), # one color per unique legend label
+       inset=c(-0.2,0), # legend outside of plot
+       title = "Harvest"
+)
+```
+
+
+```{r Prepare data for Q-Q plot comparing different KOs}
+# Pattern matching for each condition
+condition1 = "K27M+"
+condition2 = "K27M+"
+targets2 = c("CBX4.1", "CBX4.2")
+targets = c("EZH2.3","EZH2.5", "BMI1.1", "BMI1.3",
+            "CBX2.1", "CBX2.3", "CBX8.1", "CBX8.2")
+
+subfolder = as.character(DESeq@design)[2]
+
+output_dir = file.path(results_dir, subfolder, "Q-Q plots by gRNA")
+
+if(!dir.exists(output_dir)){
+  dir.create(output_dir)
+}
+
+search_dir = file.path(results_dir, subfolder, "DESeq output")
+list_dir = list.dirs(search_dir)
+
+for(i in 1:length(targets)){
+  for(j in 1:length(targets2)){
+    t = paste0(targets[i], "_", condition1, "_vs_LUC_", condition1) # K27M KO
+    t2 = paste0(targets2[j], "_", condition2, "_vs_LUC_", condition2) # K27M+
+    
+    comp = gsub("_", " ", t) # K27M+
+    comp2 = gsub("_", " ", t2) # K27M+
+    
+    compare = paste0(targets[i], "_", condition1, "_vs_", targets2[j], "_", condition2)
+    comp_dir = file.path(output_dir, compare)
+    comp_dir = gsub(work_dir, "./", comp_dir)
+    print(paste0("Making comparison: ", compare))
+  
+    if(!dir.exists(comp_dir)){
+      dir.create(comp_dir)
+    }
+  
+    
+    # t = gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", t) # K27M+
+    # print(t) #
+    # print(t2)
+    f1 = list_dir[grepl(t, list_dir, fixed = T)]  # K27M+
+    f2 = list_dir[grepl(t2, list_dir, fixed = T)]  # K27M+
+    # print(f1) #
+    # print(f2) #
+    csv1 = file.path(f1, paste0("results_", basename(f1), ".csv")) # K27M+
+    csv2 = file.path(f2, paste0("results_", basename(f2), ".csv")) # K27M+
+  
+    tab1 = read.csv(csv1)[,-1] # K27M+
+    tab2 = read.csv(csv2)[,-1] # K27M+
+  
+    tab_merge = merge(tab1, tab2, by = "Gene")
+  
+    tab_merge$Label = NA
+    tab_merge$Label[tab_merge$Gene %in% common_genes$Gene] = tab_merge$Gene[tab_merge$Gene %in% common_genes$Gene]
+    # tab_merge$Label[!is.na(tab_merge$Label.y)] = tab_merge$Gene[!is.na(tab_merge$Label.y)]
+    tab_merge$Label[!(tab_merge$log2FoldChange.x - tab_merge$log2FoldChange.y >= 1) | 
+                               !(tab_merge$log2FoldChange.x - tab_merge$log2FoldChange.y <= -1)] = NA
+  
+    limits = c(min(range(tab_merge$log2FoldChange.x)), # K27M KO
+               max(range(tab_merge$log2FoldChange.y))) %>%  # K27M+
+      rev()
+  
+    # tab_merge = filter(tab_merge, !is.na(tab_merge$Label))
+    # tab_merge_label = filter(tab_merge, (log2FoldChange.x - log2FoldChange.y >= 1) | 
+    #                            (log2FoldChange.x - log2FoldChange.y <= -1))
+    
+    tab_merge_label = filter(tab_merge, Gene %in% PcB_gene_names$Gene.Name)
+    # tab_merge_label = filter(tab_merge, Gene %in% common_genes$Gene)
+    
+    # Determine color for the current condition based on the color mapping
+    condition_color <- "black"  # Default color if no pattern matches
+    for (pattern in names(color_mapping)) {
+      if (grepl(pattern, targets2[j])) {
+        condition_color <- color_mapping[pattern]
+        break
+      }
+    }
+    
+    # x = K27M KO
+    # y = K27M+
+  
+    # Create the scatter plot
+    qqp <- ggplot(tab_merge, aes(x = log2FoldChange.x,
+                        y = log2FoldChange.y
+                        )
+    ) +
+      geom_point(size = 2, fill = "black", shape = 21) +
+      geom_point(data = tab_merge_label,
+                 size = 2, fill = condition_color, color = condition_color, shape = 21) +
+      # geom_point(size = 2, fill = "black", shape = 21) +
+      # geom_point(data = filter(tab_merge, log2FoldChange.x - log2FoldChange.y >= 1),
+      #            size = 2, fill = "blue", color = "blue", shape = 21) +
+      # geom_point(data = filter(tab_merge, log2FoldChange.x - log2FoldChange.y <= -1),
+      #            size = 2, fill = "red", color = "red", shape = 21) +
+      # Add reference lines
+      geom_abline(intercept = 0, slope = 1, color = "black") +
+      geom_abline(intercept = 1, slope = 1, linetype = "dashed", color = "red") +
+      geom_abline(intercept = -1, slope = 1, linetype = "dashed", color = "blue") +
+      labs(x = paste0("Log2 Fold-Change (", comp, ")"),
+           y = paste0("Log2 Fold-Change (", comp2, ")")) +
+      scale_x_continuous(limits = c(-limits[1],-limits[2])) +
+      scale_y_continuous(limits = c(-limits[1],-limits[2])) +
+      geom_text_repel(data = tab_merge_label, aes(label = Gene),
+                      # nudge_y = tab_merge$log2FoldChange.y *1.2,
+                      nudge_y = ifelse((tab_merge_label$log2FoldChange.x - tab_merge_label$log2FoldChange.y >= 1), -1, 1),
+                      # nudge_x = tab_merge$log2FoldChange.x / 1,
+                      max.overlaps = 10
+      ) +
+      theme_classic() +
+      guides(color = "none", alpha = "none")
+  
+    # Export q-q plot
+      qqp_path = file.path(comp_dir,
+                          paste0("Q-Q-plot.pdf"))
+      qqp_path = gsub(work_dir, "./", qqp_path)
+    
+      pdf(file = qqp_path, width = 5, height = 5)
+      print(qqp)
+      dev.off()
+
+  }
+}
+
+
+
+```
+
+```{r Check baseline levels of selected genes}
+
+counts_rlog = rlogCounts
+
+# Regularized log-transformed counts
+print("Common Genes at Baseline (Regularized log-transformed counts)")
+filter(counts_rlog, rownames(counts_rlog) %in% common_genes$Gene)[,grepl("LUC", colnames(counts_rlog))]
+counts_rlog[,grepl("LUC", colnames(counts_rlog))] %>% summary()
+
+# Z-score of the rlog transform
+counts_rlog_zscore = scale(counts_rlog) %>% as.data.frame()
+print("Common Genes at Baseline (Z-score of the rlog transform)")
+filter(counts_rlog_zscore, rownames(counts_rlog_zscore) %in% common_genes$Gene)[,grepl("LUC", colnames(counts_rlog_zscore))]
+counts_rlog_zscore[,grepl("LUC", colnames(counts_rlog_zscore))] %>% summary()
+
+
+```
+
+
+```{r Compare rlog counts for specific genes}
+gene_list = c("CDKN2A", "EYA4", "RTN1", "GAPDH")
+
+# Reshape data to long format
+rlogCounts_long <- rlogCounts %>%
+  rownames_to_column(var = "Gene") %>%
+  filter(Gene %in% gene_list) %>%
+  pivot_longer(cols = -Gene, names_to = "Sample", values_to = "RlogCounts")
+
+# Create a new column for Target based on patterns in the Sample column
+rlogCounts_long <- rlogCounts_long %>%
+  mutate(Target = case_when(
+    grepl("LUC", Sample) ~ "LUC",
+    grepl("CBX4", Sample) ~ "CBX4",
+    grepl("CBX2", Sample) ~ "CBX2",
+    grepl("CBX8", Sample) ~ "CBX8",
+    grepl("EZH2", Sample) ~ "EZH2",
+    grepl("BMI1", Sample) ~ "BMI1",
+    TRUE ~ "Other"  # Default value if no pattern matches
+  ))
+
+rlogCounts_long <- rlogCounts_long %>%
+  mutate(Genotype = case_when(
+    grepl("KO", Sample) ~ "K27M KO",
+    grepl("K27M\\+", Sample) ~ "K27M+",
+    TRUE ~ "Other"  # Default value if no pattern matches
+  ))
+
+rlogCounts_long$Group = paste(rlogCounts_long$Target, rlogCounts_long$Genotype, sep = " ")
+
+rlogCounts_long$Target = factor(rlogCounts_long$Target,
+                                levels = c("LUC", "CBX2", "CBX4", "CBX8", "BMI1", "EZH2"))
+
+
+for (gene in 1:length(gene_list)) {
+  df_ko = filter(rlogCounts_long, Gene %in% gene_list[gene], grepl("KO", rlogCounts_long$Genotype))
+  df_k27 = filter(rlogCounts_long, Gene %in% gene_list[gene], !grepl("KO", rlogCounts_long$Genotype))
+  
+  # K27M KO
+  b <- ggplot(df_ko, aes(x = Target, y = RlogCounts, color = Target)) +
+    geom_jitter(width = 0.2, size = 2.5, alpha = 0.75) +
+    # facet_grid(Genotype ~ Gene, scales = "free_y") +
+    scale_color_manual(values = color_mapping) +
+    theme_classic() +
+    labs(
+      title = paste0(gene_list[gene]),
+      subtitle = "K27M KO",
+      # x = "Target",
+      y = "Counts\n(rlog scale)"
+    ) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.title.x = element_blank(),
+      legend.position = "none",
+      title = element_text(hjust = 0.5)
+    )
+  
+  # K27M+
+  a <- ggplot(df_k27, aes(x = Target, y = RlogCounts, color = Target)) +
+    geom_jitter(width = 0.2, size = 2.5, alpha = 0.75) +
+    # facet_grid(Genotype ~ Gene, scales = "free_y") +
+    scale_color_manual(values = color_mapping) +
+    theme_classic() +
+    labs(
+      title = paste0(gene_list[gene]),
+      subtitle = "K27M+",
+      # x = "Target",
+      y = "Counts\n(rlog scale)"
+    ) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.title.x = element_blank(),
+      legend.position = "none",
+      title = element_text(hjust = 0.5)
+    )
+
+  print(a)
+  print(b)
+}
+
+
+```
+  
+    
+### MA Plots (K27M+) 
+
+```{r MA Plots (K27M+))}
+# FDR cut-off
+alpha = 0.01
+
+# LFC cut-off
+lfc = 0.585
+
+# List comparisons for statistical testing
+
+## Compare conditions, taking timepoint of harvest into account in the design matrix
+# output_dir = contrast_by
+output_dir = file.path(as.character(DESeq@design)[2], "MA plots")
+
+controls = c(#"CBX2.1_K27M_KO", "CBX2.3_K27M_KO",
+             #"CBX8.1_K27M_KO", "CBX8.2_K27M_KO",
+             "CBX2.1_K27M+", "CBX2.3_K27M+",
+             "CBX8.1_K27M+", "CBX8.2_K27M+",
+             "EZH2.3_K27M+", "EZH2.5_K27M+", 
+             "BMI1.1_K27M+", "BMI1.3_K27M+",
+             "CBX4.1_K27M_KO", "CBX4.2_K27M_KO")
+
+conditions = c("CBX4.1_K27M+", "CBX4.2_K27M+")
+
+# Define color mapping for conditions
+color_mapping <- c(
+  "LUC" = "black",
+  "CBX4" = "darkgreen",
+  "CBX2" = "lightgreen",
+  "CBX8" = "green4",
+  "BMI1" = "dodgerblue",
+  "EZH2" = "dodgerblue3"
+)
+
+# Create output dir
+output.dir = file.path(results_dir, output_dir)
+if(!dir.exists(output.dir)){
+      dir.create(output.dir)
+    }
+
+
+
+# This code loops through each possible treatment vs control combination,
+# performs statistical testing, and outputs table of results
+for(control in 1:length(controls)){
+  for(condition in 1:length(conditions)){
+    if(conditions[condition] == controls[control]){
+      next
+    }
+    # Escaping special characters in conditions dynamically before using in regex
+    pattern_condition <- gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", conditions[condition])
+    pattern_control <- gsub("([.|()\\^{}+$*?]|\\[|\\])", "\\\\\\1", controls[control])
+    
+    # Get the column names in `counts(dataSet)` that represent the comparison
+    # condition_cols <- grep(conditions[condition], colnames(counts(dataSet)), value = TRUE)
+    # control_cols <- grep(controls[control], colnames(counts(dataSet)), value = TRUE)
+    condition_cols <- grep(pattern_condition, colnames(counts(dataSet)), value = TRUE)
+    control_cols <- grep(pattern_control, colnames(counts(dataSet)), value = TRUE)
+    
+    # Combine the columns that match the patterns
+    selected_cols <- c(condition_cols, control_cols)
+    
+    # Subset the matrix based on the matched columns
+    comp_data <- counts(dataSet)[, selected_cols]
+    aveCounts = comp_data %>% as.data.frame()
+    
+    # Get average log2 CPM for all genes in the comparison
+    aveCounts$avgcounts = aveLogCPM(comp_data)
+    aveCounts$Gene = rownames(aveCounts)
+    aveCounts = aveCounts[,c("Gene", "avgcounts")]
+
+    # Create label for the specific comparison
+    comparisons = paste(conditions[condition], "vs", controls[control], sep = "_")
+
+    print(paste0("Making comparison: ", selected_cols))
+    
+    # Contrast
+    contrast = c(contrast_by,conditions[condition],controls[control])
+    print(paste0("Contrasting: ", contrast))
+    
+    # Building the results table
+    results <- results(DESeq,
+                       contrast = contrast,
+                       alpha = alpha)
+
+    comp_dir = file.path(results_dir, output_dir, comparisons)
+    comp_dir = gsub(work_dir, "./", comp_dir)
+    if(!dir.exists(comp_dir)){
+      dir.create(comp_dir)
+    }
+
+        
+    # Extract results table
+    results_df <- as.data.frame(results) %>% arrange(pvalue)
+
+    results_df = results_df %>% rownames_to_column(var = "Gene")
+
+    results_df$target = "Non-PcB"
+    results_df$target[results_df$Gene %in% PcB_gene_names$Gene.Name] = "PcB target"
+
+    results_merged = merge(results_df, aveCounts, by = "Gene")
+    results_df = results_merged
+    
+    # Prepare data for MA plot
+    results_PcB = filter(results_df, Gene %in% PcB_gene_names$Gene.Name)
+    results_PcB$Label = NA
+    results_PcB$Label[results_PcB$log2FoldChange > lfc | results_PcB$log2FoldChange < -lfc] = results_PcB$Gene[results_PcB$log2FoldChange > lfc | results_PcB$log2FoldChange < -lfc]
+    # Show only labels for common genes
+    results_PcB$Label[!results_PcB$Gene %in% common_genes$Gene] = NA
+    
+    # Determine color for the current condition based on the color mapping
+    condition_color <- "black"  # Default color if no pattern matches
+    for (pattern in names(color_mapping)) {
+      if (grepl(pattern, conditions[condition])) {
+        condition_color <- color_mapping[pattern]
+        break
+      }
+    }
+
+    # Make MA plot and export
+    comparison = gsub("_", " ", comparisons)
+    ### For PcB targets only
+    ma = ggplot(data = results_df, 
+                aes(x=avgcounts, 
+                    y=log2FoldChange, 
+                    # color = target
+                    )
+                ) +
+      geom_point() +
+      geom_point(data = results_PcB,
+                 # size = 2, 
+                 fill = condition_color, 
+                 color = condition_color, 
+                 shape = 21
+                 ) +
+      theme_classic() +
+      # Add axes labels
+      ylab("Log2 Fold-Change") +
+      xlab("Average transcript expression (log scale)") +
+      # Add plot tile based on which comparison was made
+      ggtitle(comparison) +
+      # Add vertical lines for log2FoldChange thresholds, and one horizontal line for the p-value threshold 
+      geom_hline(yintercept = -lfc, lty = "dashed") +
+      geom_hline(yintercept = 0) +
+      geom_hline(yintercept = lfc, lty = "dashed") +
+      scale_x_continuous(n.breaks = 7) +
+      scale_y_continuous(limits = c(-4, 4)) +
+      # Modify plotting theme
+      theme(legend.title = element_blank(),
+            plot.title = element_text(hjust = 0.5),
+            panel.border = element_rect(color = "black", fill = NA),
+            panel.grid.minor = element_blank()) +
+      # Apply custom color scale based on user-defined labels and colors
+      # scale_color_manual(values = color_mapping) + 
+      # Organize labels in the plot
+      geom_text_repel(data = results_PcB, 
+                      aes(label = results_PcB$Label),
+                      nudge_y = 0.25 * results_PcB$log2FoldChange,
+                      nudge_x = 0.25 * results_PcB$avgcounts)  
+    
+    
+    # Export MA plot for all genes
+    vp_path = file.path(comp_dir,
+                        paste0("MA_all_genes_", comparisons, ".pdf"))
+    vp_path = gsub(work_dir, "./", vp_path)
+    
+    pdf(file = vp_path, width = 6.5, height = 5)
+    print(ma)
+    dev.off()
+
+    # Export data frames with results
+    df_path = file.path(comp_dir,
+                        paste0("results_MA", comparisons, ".csv"))
+    df_path = gsub(work_dir, "./", df_path)
+    
+    write.csv(results_df, file = df_path, quote = FALSE)
+
+  }
+}
+
+```
