@@ -1,0 +1,30 @@
+
+#!/bin/bash
+#BSUB -P RNA
+#BSUB -J 5A_R1_001.count
+#BSUB -o /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/log/5A_R1_001.out
+#BSUB -e /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/log/5A_R1_001.error
+#BSUB -q normal
+#BSUB -M 61440
+
+conda init bash
+
+# -p specifies paired-end data   
+# --countReadPairs (paired-end data) count read pairs instead of reads
+# -B require that BOTH read pairs be aligned 
+# -C do NOT count read pairs with ends mapping to different chromosomes/strands
+# -M count multimapped reads (that aligned to more than one site)
+# --primary If a read was aligned to more than one place (multimapping), count ONLY the primary alignment
+# -O count multi-overlaping reads (that overlap more than one feature, NOT RECOMMENDED for RNAseq)
+# -s 0 (default) ignores strandness / 1 strand-specific summarization
+# -t Feature used for read counting (exon by default)
+# -g Specify attribute type in GTF annotation ('gene_id' by default)
+featureCounts -p -B -C -M --primary -s 1 -t gene -g gene_id -a /home/genesi/mylibrary/Genomes/hg38/GCA_000001405.15_GRCh38_full_analysis_set.refseq_annotation.gtf -o /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/5A_R1_001.featureCounts.txt /home/genesi/RNAseq_2024_Brien_Paper/alignment/5A_R1_001.bam
+
+# Get only columns 1 (gene_id), 5 (strand) and 6 (gene_length) 
+tail -n+3 /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/5A_R1_001.featureCounts.txt | cut -f1,5,6 > /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/gene_length.txt
+
+# Get only columns 1 (gene_id) and 7 (read counts)
+tail -n+3 /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/5A_R1_001.featureCounts.txt | cut -f1,7 > /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/5A_R1_001.counts.txt.tmp
+mv /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/5A_R1_001.counts.txt.tmp /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/5A_R1_001.counts.txt
+

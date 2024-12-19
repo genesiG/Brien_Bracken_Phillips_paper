@@ -1,0 +1,54 @@
+
+        ==========     _____ _    _ ____  _____  ______          _____  
+        =====         / ____| |  | |  _ \|  __ \|  ____|   /\   |  __ \ 
+          =====      | (___ | |  | | |_) | |__) | |__     /  \  | |  | |
+            ====      \___ \| |  | |  _ <|  _  /|  __|   / /\ \ | |  | |
+              ====    ____) | |__| | |_) | | \ \| |____ / ____ \| |__| |
+        ==========   |_____/ \____/|____/|_|  \_\______/_/    \_\_____/
+	  v2.0.1
+
+//========================== featureCounts setting ===========================\\
+||                                                                            ||
+||             Input files : 1 BAM file                                       ||
+||                           o 29A_R1_001.bam                                 ||
+||                                                                            ||
+||             Output file : 29A_R1_001.featureCounts.txt                     ||
+||                 Summary : 29A_R1_001.featureCounts.txt.summary             ||
+||              Annotation : GCA_000001405.15_GRCh38_full_analysis_set.re ... ||
+||      Dir for temp files : /home/genesi/RNAseq_2024_Brien_Paper/feature ... ||
+||                                                                            ||
+||                 Threads : 1                                                ||
+||                   Level : meta-feature level                               ||
+||              Paired-end : yes                                              ||
+||      Multimapping reads : counted                                          ||
+||     Multiple alignments : primary alignment only                           ||
+|| Multi-overlapping reads : not counted                                      ||
+||   Min overlapping bases : 1                                                ||
+||                                                                            ||
+||          Chimeric reads : not counted                                      ||
+||        Both ends mapped : required                                         ||
+||                                                                            ||
+\\============================================================================//
+
+//================================= Running ==================================\\
+||                                                                            ||
+|| Load annotation file GCA_000001405.15_GRCh38_full_analysis_set.refseq_ ... ||
+||    Features : 64272                                                        ||
+||    Meta-features : 64272                                                   ||
+||    Chromosomes/contigs : 312                                               ||
+||                                                                            ||
+|| Process BAM file 29A_R1_001.bam...                                         ||
+||    Strand specific : stranded                                              ||
+||    Paired-end reads are included.                                          ||
+||    Total alignments : 20897528                                             ||
+||    Successfully assigned alignments : 10871541 (52.0%)                     ||
+||    Running time : 1.82 minutes                                             ||
+||                                                                            ||
+|| Write the final count table.                                               ||
+|| Write the read assignment summary.                                         ||
+||                                                                            ||
+|| Summary of counting results can be found in file "/home/genesi/RNAseq_202  ||
+|| 4_Brien_Paper/featureCounts/29A_R1_001.featureCounts.txt.summary"          ||
+||                                                                            ||
+\\============================================================================//
+

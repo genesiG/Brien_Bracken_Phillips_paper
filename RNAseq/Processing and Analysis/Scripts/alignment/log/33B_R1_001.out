@@ -1,0 +1,78 @@
+Sender: LSF System <lsfadmin@node190.hpc.local>
+Subject: Job 82934694: <33B_R1_001.align> in cluster <pennhpc> Done
+
+Job <33B_R1_001.align> was submitted from host <node155.hpc.local> by user <genesi> in cluster <pennhpc> at Tue Jun 18 14:56:59 2024
+Job was executed on host(s) <24*node190.hpc.local>, in queue <normal>, as user <genesi> in cluster <pennhpc> at Tue Jun 18 14:57:01 2024
+</home/genesi> was used as the home directory.
+</home/genesi/RNAseq_2024_Brien_Paper/pipelines> was used as the working directory.
+Started at Tue Jun 18 14:57:01 2024
+Terminated at Tue Jun 18 15:21:06 2024
+Results reported at Tue Jun 18 15:21:06 2024
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+
+#!/bin/bash
+#BSUB -P RNA
+#BSUB -J 33B_R1_001.align
+#BSUB -o /home/genesi/RNAseq_2024_Brien_Paper/alignment/log/33B_R1_001.out
+#BSUB -e /home/genesi/RNAseq_2024_Brien_Paper/alignment/log/33B_R1_001.error
+#BSUB -q normal
+#BSUB -n 8,24
+#BSUB -M 64000
+
+conda init bash
+
+## align using HISAT2 (output sam file)
+hisat2 -p $LSB_DJOB_NUMPROC -q --no-discordant --no-mixed -x /home/genesi/mylibrary/HISAT2/hg38/GCA_000001405.15_GRCh38_full_analysis_set -1 /home/genesi/RNAseq_2024_Brien_Paper/raw_data/33B_R1_001.fastq.gz -2 /home/genesi/RNAseq_2024_Brien_Paper/raw_data/33B_R2_001.fastq.gz -S /home/genesi/RNAseq_2024_Brien_Paper/alignment/33B_R1_001.sam
+
+## convert sam files to bam files, filtering out QMap<=30 or nonprimary reads, then sort and index 
+samtools view -h -q 30 -b -S -f 2 -F 4 -F 8 -F 256 -F 512 -F 2048 /home/genesi/RNAseq_2024_Brien_Paper/alignment/33B_R1_001.sam > /home/genesi/RNAseq_2024_Brien_Paper/alignment/33B_R1_001.bam
+samtools sort /home/genesi/RNAseq_2024_Brien_Paper/alignment/33B_R1_001.bam -o /home/genesi/RNAseq_2024_Brien_Paper/alignment/33B_R1_001.bam.tmp
+mv /home/genesi/RNAseq_2024_Brien_Paper/alignment/33B_R1_001.bam.tmp /home/genesi/RNAseq_2024_Brien_Paper/alignment/33B_R1_001.bam
+samtools index /home/genesi/RNAseq_2024_Brien_Paper/alignment/33B_R1_001.bam
+samtools flagstat /home/genesi/RNAseq_2024_Brien_Paper/alignment/33B_R1_001.bam > /home/genesi/RNAseq_2024_Brien_Paper/alignment/33B_R1_001.flagstat.txt
+samtools idxstats /home/genesi/RNAseq_2024_Brien_Paper/alignment/33B_R1_001.bam > /home/genesi/RNAseq_2024_Brien_Paper/alignment/33B_R1_001.idxstat.txt
+
+rm /home/genesi/RNAseq_2024_Brien_Paper/alignment/33B_R1_001.sam 
+
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   16948.00 sec.
+    Max Memory :                                 5009 MB
+    Average Memory :                             2478.74 MB
+    Total Requested Memory :                     -
+    Delta Memory :                               -
+    Max Swap :                                   -
+    Max Processes :                              9
+    Max Threads :                                34
+    Run time :                                   1445 sec.
+    Turnaround time :                            1447 sec.
+
+The output (if any) follows:
+
+no change     /home/genesi/miniconda3/condabin/conda
+no change     /home/genesi/miniconda3/bin/conda
+no change     /home/genesi/miniconda3/bin/conda-env
+no change     /home/genesi/miniconda3/bin/activate
+no change     /home/genesi/miniconda3/bin/deactivate
+no change     /home/genesi/miniconda3/etc/profile.d/conda.sh
+no change     /home/genesi/miniconda3/etc/fish/conf.d/conda.fish
+no change     /home/genesi/miniconda3/shell/condabin/Conda.psm1
+no change     /home/genesi/miniconda3/shell/condabin/conda-hook.ps1
+no change     /home/genesi/miniconda3/lib/python3.9/site-packages/xontrib/conda.xsh
+no change     /home/genesi/miniconda3/etc/profile.d/conda.csh
+no change     /home/genesi/.bashrc
+No action taken.
+
+
+PS:
+
+Read file </home/genesi/RNAseq_2024_Brien_Paper/alignment/log/33B_R1_001.error> for stderr output of this job.
+

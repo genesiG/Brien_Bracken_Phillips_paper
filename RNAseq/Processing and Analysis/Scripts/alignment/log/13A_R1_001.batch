@@ -1,0 +1,24 @@
+
+#!/bin/bash
+#BSUB -P RNA
+#BSUB -J 13A_R1_001.align
+#BSUB -o /home/genesi/RNAseq_2024_Brien_Paper/alignment/log/13A_R1_001.out
+#BSUB -e /home/genesi/RNAseq_2024_Brien_Paper/alignment/log/13A_R1_001.error
+#BSUB -q normal
+#BSUB -n 8,24
+#BSUB -M 64000
+
+conda init bash
+
+## align using HISAT2 (output sam file)
+hisat2 -p $LSB_DJOB_NUMPROC -q --no-discordant --no-mixed -x /home/genesi/mylibrary/HISAT2/hg38/GCA_000001405.15_GRCh38_full_analysis_set -1 /home/genesi/RNAseq_2024_Brien_Paper/raw_data/13A_R1_001.fastq.gz -2 /home/genesi/RNAseq_2024_Brien_Paper/raw_data/13A_R2_001.fastq.gz -S /home/genesi/RNAseq_2024_Brien_Paper/alignment/13A_R1_001.sam
+
+## convert sam files to bam files, filtering out QMap<=30 or nonprimary reads, then sort and index 
+samtools view -h -q 30 -b -S -f 2 -F 4 -F 8 -F 256 -F 512 -F 2048 /home/genesi/RNAseq_2024_Brien_Paper/alignment/13A_R1_001.sam > /home/genesi/RNAseq_2024_Brien_Paper/alignment/13A_R1_001.bam
+samtools sort /home/genesi/RNAseq_2024_Brien_Paper/alignment/13A_R1_001.bam -o /home/genesi/RNAseq_2024_Brien_Paper/alignment/13A_R1_001.bam.tmp
+mv /home/genesi/RNAseq_2024_Brien_Paper/alignment/13A_R1_001.bam.tmp /home/genesi/RNAseq_2024_Brien_Paper/alignment/13A_R1_001.bam
+samtools index /home/genesi/RNAseq_2024_Brien_Paper/alignment/13A_R1_001.bam
+samtools flagstat /home/genesi/RNAseq_2024_Brien_Paper/alignment/13A_R1_001.bam > /home/genesi/RNAseq_2024_Brien_Paper/alignment/13A_R1_001.flagstat.txt
+samtools idxstats /home/genesi/RNAseq_2024_Brien_Paper/alignment/13A_R1_001.bam > /home/genesi/RNAseq_2024_Brien_Paper/alignment/13A_R1_001.idxstat.txt
+
+rm /home/genesi/RNAseq_2024_Brien_Paper/alignment/13A_R1_001.sam 

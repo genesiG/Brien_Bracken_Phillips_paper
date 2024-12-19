@@ -1,0 +1,16 @@
+///SOFTWARE///
+HISAT2 v 2.2.1 downloaded on 2024/6/18 and built from source 
+hg38 genome build (GCA_000001405.15_GRCh38_full_analysis_set.fna.gz) was downloaded on 2024/6/18
+Genome annotations GCA_000001405.15_GRCh38_full_analysis_set.refseq_annotation.gtf.gz (2023-10-18) were downloaded on 2024/6/18
+Genome indexes for HISAT2 (GCA_000001405.15_GRCh38_full_analysis_set.fna.hisat2_index.tar.gz) were downloaded on 2024/6/18
+
+///SCRIPTS///
+The script `prepare_paired_samples.py` was used to generate the `paired_samples.txt` file for downstream scripts
+The script `bsub_hisat2.pl` was used to map reads to hg38 genome, then filter, sort, and index bam files
+The script `bsub_featureCounts.pl` was used to extract read counts from each sample
+The script `summary_featureCounts.pl` was used to summarize read counts for each sample into a single file to be used in the .Rmd script.
+
+///FOLDERS///
+The `alingment` folder contains the statistics for the alignment of each fastq sample to the reference genome, as well as the log files for each performed alignment
+The `featureCounts` folder contains read length information, the summarized read counts file resulting from the `summary_featureCounts.pl` script, and the log files for each performed read extraction
+The `pipelines` folder contains the scripts that were submitted in the HPC cluster to perform the tasks described in the SCRIPTS section of this guide.

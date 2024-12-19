@@ -1,0 +1,12 @@
+///FOLDERS///
+The `Original_Data` folder contains the files from the DepMap 24Q2 dataset used in this analysis
+The `Processing_and_Analysis/Importable_Data` folder contains the formatted spreadsheets with DepMap 24Q2 information for the selected genes only, as well as the PcB target genes  
+The `Processing_and_Analysis/Scripts` folder is self explanatory
+The `Processing_and_Analysis/Analysis_Data` contain the output tables and plots
+
+///METADATA///
+The `Original_Data/Model.csv` contains the mapping of each ModelID from the DepMap 24Q2 dataset to its metadata, of particular interest to us was the specific cell line of each screen in the DepMap
+
+///USAGE///
+The `CRISPRGeneDependency.csv` and `CRISPRGeneEffect.csv` from the DepMap 24Q2 dataset were downloaded and imported into R with the `Processing_and_Analysis/Scripts/CRISPR_Dependency.R` script.
+The `Original_Data/Model.csv` table was imported into R and modified to generate the output plots.

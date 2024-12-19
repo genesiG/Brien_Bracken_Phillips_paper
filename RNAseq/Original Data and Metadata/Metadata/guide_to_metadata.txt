@@ -1,0 +1,4 @@
+///SPREADSHEETS///
+`DIPGXIII_PcG_consensus_target_genes` include a list of consensus PcB targets on DIPGXIII cells from genome coverage data.
+`sample_codes` is a table mapping each sample ID to its genotype, replicate, sgRNA used, concentration at each time point of harvest and total RNA yield.
+`sample_metadata` is a table mapping each sample ID to its genotype, replicate, sgRNA used, and gene targeted. 

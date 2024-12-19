@@ -1,0 +1,84 @@
+Sender: LSF System <lsfadmin@node192.hpc.local>
+Subject: Job 82935635: <41A_R1_001.count> in cluster <pennhpc> Done
+
+Job <41A_R1_001.count> was submitted from host <node155.hpc.local> by user <genesi> in cluster <pennhpc> at Tue Jun 18 16:56:30 2024
+Job was executed on host(s) <node192.hpc.local>, in queue <normal>, as user <genesi> in cluster <pennhpc> at Tue Jun 18 16:56:31 2024
+</home/genesi> was used as the home directory.
+</home/genesi/RNAseq_2024_Brien_Paper/pipelines> was used as the working directory.
+Started at Tue Jun 18 16:56:31 2024
+Terminated at Tue Jun 18 16:57:35 2024
+Results reported at Tue Jun 18 16:57:35 2024
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+
+#!/bin/bash
+#BSUB -P RNA
+#BSUB -J 41A_R1_001.count
+#BSUB -o /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/log/41A_R1_001.out
+#BSUB -e /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/log/41A_R1_001.error
+#BSUB -q normal
+#BSUB -M 61440
+
+conda init bash
+
+# -p specifies paired-end data   
+# --countReadPairs (paired-end data) count read pairs instead of reads
+# -B require that BOTH read pairs be aligned 
+# -C do NOT count read pairs with ends mapping to different chromosomes/strands
+# -M count multimapped reads (that aligned to more than one site)
+# --primary If a read was aligned to more than one place (multimapping), count ONLY the primary alignment
+# -O count multi-overlaping reads (that overlap more than one feature, NOT RECOMMENDED for RNAseq)
+# -s 0 (default) ignores strandness / 1 strand-specific summarization
+# -t Feature used for read counting (exon by default)
+# -g Specify attribute type in GTF annotation ('gene_id' by default)
+featureCounts -p -B -C -M --primary -s 1 -t gene -g gene_id -a /home/genesi/mylibrary/Genomes/hg38/GCA_000001405.15_GRCh38_full_analysis_set.refseq_annotation.gtf -o /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/41A_R1_001.featureCounts.txt /home/genesi/RNAseq_2024_Brien_Paper/alignment/41A_R1_001.bam
+
+# Get only columns 1 (gene_id), 5 (strand) and 6 (gene_length) 
+tail -n+3 /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/41A_R1_001.featureCounts.txt | cut -f1,5,6 > /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/gene_length.txt
+
+# Get only columns 1 (gene_id) and 7 (read counts)
+tail -n+3 /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/41A_R1_001.featureCounts.txt | cut -f1,7 > /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/41A_R1_001.counts.txt.tmp
+mv /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/41A_R1_001.counts.txt.tmp /home/genesi/RNAseq_2024_Brien_Paper/featureCounts/41A_R1_001.counts.txt
+
+
+------------------------------------------------------------
+
+Successfully completed.
+
+Resource usage summary:
+
+    CPU time :                                   63.45 sec.
+    Max Memory :                                 50 MB
+    Average Memory :                             43.00 MB
+    Total Requested Memory :                     -
+    Delta Memory :                               -
+    Max Swap :                                   -
+    Max Processes :                              4
+    Max Threads :                                6
+    Run time :                                   64 sec.
+    Turnaround time :                            65 sec.
+
+The output (if any) follows:
+
+no change     /home/genesi/miniconda3/condabin/conda
+no change     /home/genesi/miniconda3/bin/conda
+no change     /home/genesi/miniconda3/bin/conda-env
+no change     /home/genesi/miniconda3/bin/activate
+no change     /home/genesi/miniconda3/bin/deactivate
+no change     /home/genesi/miniconda3/etc/profile.d/conda.sh
+no change     /home/genesi/miniconda3/etc/fish/conf.d/conda.fish
+no change     /home/genesi/miniconda3/shell/condabin/Conda.psm1
+no change     /home/genesi/miniconda3/shell/condabin/conda-hook.ps1
+no change     /home/genesi/miniconda3/lib/python3.9/site-packages/xontrib/conda.xsh
+no change     /home/genesi/miniconda3/etc/profile.d/conda.csh
+no change     /home/genesi/.bashrc
+No action taken.
+
+
+PS:
+
+Read file </home/genesi/RNAseq_2024_Brien_Paper/featureCounts/log/41A_R1_001.error> for stderr output of this job.
+
